@@ -2,64 +2,88 @@ package cis5550.generic;
 
 import java.io.*;
 import java.net.*;
-import java.util.Random;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.*;
 
-import cis5550.tools.Logger;
-import cis5550.webserver.Server;
+public class Worker{
+	
+	public static String MY_ID = "";
+	
+	public static Runnable pingImpl(int workerServerPort, String storageDirectory, String ipPort){
+		
+	    Runnable helperRunnable = new Runnable(){
+			public void run() {
+				String workerID = "";
 
-public class Worker {
-    protected static String id_;
-    protected static String ip_;
-    protected static int portNumber_;
+				String slash = "";
+				if (storageDirectory.charAt(storageDirectory.length() - 1) != '/')
+					slash = "/";
 
-    protected static String storageDirectory_;
-    protected static String masterIp_;
-    protected static int masterPortNumber_;
+				Path idPath = Paths.get(storageDirectory + slash + "id");
 
-    public static void port(int portNumber) {
-        portNumber_ = portNumber;
-        Server.port(portNumber);
-    }
+				if (Files.exists(idPath)) {
+					try {
+						workerID = Files.readString(idPath);
+					} catch (IOException e1) {
+						System.out.println("IOException while reading id file");
+						e1.printStackTrace();
+					}
+				} else {
+					Random random = new Random();
+					workerID = random.ints(97, 122 + 1) // 97 - a; 122 - z
+							.limit(5) // id length
+							.collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append)
+							.toString();
+					try {
+						Files.createDirectories(Paths.get(storageDirectory));
+						Files.writeString(idPath, workerID, StandardCharsets.UTF_8);
+					} catch (IOException e) {
+						System.out.println("IOException while writing to id file");
+						e.printStackTrace();
+					}
+					
+				}
+				
+				MY_ID = workerID;
+				System.out.println("id: "+workerID);
 
-    /**
-     * Creates a thread that makes the periodic /ping requests.
-     */
-    public static void startPingThread() {
-        new Thread(() -> {
-            try {
-                Socket socket = new Socket(masterIp_, masterPortNumber_);
-                while (true) {
-                    pingMaster(socket);
-                    Thread.sleep(5 * 1000);
-                }
-            } catch (IOException e) {
-                Logger.getLogger(Worker.class).fatal("Failed to ping master server.", e);
-            } catch (InterruptedException e) {
-                ;
-            }
-        }).start();
-    }
+				String URLlink = String.format("http://%s/ping?id=%s&port=%s", ipPort, workerID, workerServerPort);
+				URL url1;
 
-    private static void pingMaster(Socket socket) throws IOException, InterruptedException {
-        try {
-            PrintWriter out = new PrintWriter(socket.getOutputStream());
-            out.print(String.format("GET /ping?id=%s&port=%d HTTP/1.1\r\nHost: localhost\r\n\r\n", id_, portNumber_));
-            out.flush();
-        } catch (UnknownHostException e) {
-            Logger.getLogger(Worker.class).fatal("Invalid master IP address.", e);
-            throw e;
-        } catch (IOException e) {
-            Logger.getLogger(Worker.class).fatal("Failed connection to master server.", e);
-            throw e;
-        }
-    }
+				while (true) {
 
-    protected static String randomWorkerId() {
-        Random rand = new Random();
-        String id = new String();
-        for (int i = 0; i < 5; i++) {
-            id += Character.toString((char) (97 + rand.nextInt(26)));
-        }
-        return id;
-    }
+					try {
+						url1 = new URL(URLlink);
+						url1.getContent();
+						Thread.sleep(5000);
+					} catch (MalformedURLException e) {
+						System.out.println("MalformedURLException while creating a URL for worker");
+						e.printStackTrace();
+					} catch (IOException e) {
+						System.out.println("IOException while triggering HTTP request for worker");
+						e.printStackTrace();
+					} catch (InterruptedException e) {
+						System.out.println("InterruptedException at thread sleep in pingImpl");
+						e.printStackTrace();
+					}
+
+				}
+			}
+	    };
+
+	    return helperRunnable;
+
+	}
+
+    
+	public static void startPingThread(int workerServerPort, String storageDirectory, String ipPort) {
+		
+		Thread thread = new Thread(pingImpl(workerServerPort, storageDirectory, ipPort));
+        thread.start();
+        	
+	}
+	
 }

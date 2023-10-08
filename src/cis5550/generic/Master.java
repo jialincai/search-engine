@@ -1,143 +1,149 @@
 package cis5550.generic;
 
-import java.io.*;
-import java.net.*;
+import static cis5550.webserver.Server.get;
+
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
-import cis5550.tools.Logger;
-import cis5550.webserver.Request;
 import cis5550.webserver.Response;
-import cis5550.webserver.Server;
-
-import static cis5550.webserver.Server.*;
+import cis5550.webserver.Request;
 
 public class Master {
-    protected static int portNumber_;
-    protected static List<WorkerInfo> activeWorkers_ = Collections.synchronizedList(new LinkedList<>());
 
-    public static void setPort(int portNumber) {
-        portNumber_ = portNumber;
-        Server.port(portNumber);
-    }
+	static class workerNode {
+		String id;
+		String ip;
+		int port;
+		long lastActive;
+	}
 
-    /**
-     * The HTML table with the list of workers.
-     */
-    public static String workerTable() throws IOException {
-        // Read adminPage.html into a String.
-        StringBuilder contentBuilder = new StringBuilder();
-        BufferedReader in = new BufferedReader(new FileReader("src/cis5550/html/adminPage.html"));
-        String str;
-        while ((str = in.readLine()) != null) {
-            contentBuilder.append(str);
-        }
-        in.close();
-        String toReturn = contentBuilder.toString();
+	static ConcurrentHashMap<String, workerNode> activeWorkerNodes = new ConcurrentHashMap<String, workerNode>();
 
-        // Html for worker attributes.
-        contentBuilder.setLength(0);
-        synchronized (activeWorkers_) {
-            for (WorkerInfo w : activeWorkers_) {
-                String link = String.format("http://%s:%d/", w.ip_, w.portNumber_);
-                contentBuilder.append("<tr>")
-                        .append(String.format("<td>%s</td>", w.id_))
-                        .append(String.format("<td>%s</td>", w.ip_))
-                        .append(String.format("<td>%d</td>", w.portNumber_))
-                        .append(String.format("<td><a href=\"%s\">%s</td>", link, link))
-                        .append("</tr>");
-            }
-        }
-        toReturn = toReturn.replace("<!-- INSERT_TABLE_HERE -->", contentBuilder.toString());
-        return toReturn;
-    }
+	public static List<String> getWorkers() {
+		List<String> curWorkersList = new ArrayList<String>();
+		for (Map.Entry<String, workerNode> entry : activeWorkerNodes.entrySet()) {
+			workerNode node = entry.getValue();
+			if (System.currentTimeMillis() - node.lastActive <= 15000) {
+				curWorkersList.add(node.ip + ":" + node.port);
+			}
+		}
+		return curWorkersList;
+	}
 
-    /**
-     * Creates routes for the /ping and /workers routes
-     */
-    public static void registerRoutes() {
-        get("/ping", (req, res) -> {
-            addWorker(req, res);
-            return null;
-        });
+	public static String workerTable() {
 
-        get("/workers", (req, res) -> {
-            return getWorkers();
-        });
-    }
+		String htmlTable = "";
+		int curNode = 0;
+		for (Map.Entry<String, workerNode> entry : activeWorkerNodes.entrySet()) {
+			workerNode node = entry.getValue();
+			if (System.currentTimeMillis() - node.lastActive <= 15000) {
+				curNode += 1;
+				String nodeInfo = node.id + "," + node.ip + ":" + node.port;
+				htmlTable += "<tr>"
+						+ String.format("<td> %d </td>", curNode)
+						+ String.format("<td><a href=\"http://%s:%s/\"> %s </a></td>", node.ip, node.port, node.id)
+						+ String.format("<td> %s </td>", node.ip)
+						+ String.format("<td> %s </td>", node.port)
+						+ "</tr>";
+			}
+		}
 
-    /**
-     * Creates a thread that expires threads without pings in past 15 seconds.
-     */
-    public static void startExpireThread() {
-        new Thread(() -> {
-            while (true) {
-                removeExpiredWorkers();
-                try {
-                    Thread.sleep(5 * 1000);
-                } catch (InterruptedException e) {
-                    ;
-                }
-            }
-        }).start();
-    }
+		if (htmlTable == "") {
+			return "No active worker nodes to display.";
+		}
 
-    private static void removeExpiredWorkers() {
-        activeWorkers_.removeIf(w -> System.currentTimeMillis() - w.lastPing_ > 15 * 1000);
-    }
+		htmlTable = "<table>"
+				+ "<thead><tr>"
+				+ "		<th>S.No</th>"
+				+ "		<th>ID</th>"
+				+ "		<th>IP</th>"
+				+ "		<th>Port</th>"
+				+ "	</tr></thead><tbody>"
+				+ htmlTable + "</tbody></table>";
 
-    private static void addWorker(Request request, Response response) throws UnknownHostException {
-        String id = request.queryParams("id");
-        String ip = request.ip();
-        Integer portNumber;
-        try {
-            portNumber = Integer.parseInt(request.queryParams("port"));
-        } catch (NumberFormatException e) {
-            Logger.getLogger(Master.class).error("Unable to parse port number.", e);
-            portNumber = null;
-        }
+		return htmlTable;
 
-        if (id != null || ip != null || portNumber != null) {
-            WorkerInfo w = getWorker(id);
-            if (w != null) {
-                w.ip_ = ip;
-                w.portNumber_ = portNumber;
-                w.lastPing_ = System.currentTimeMillis();
-            } else {
-                activeWorkers_.add(new WorkerInfo(id, ip, portNumber));
-            }
-            response.status(200, "OK");
-            response.body("OK");
-        } else {
-            response.status(400, "Bad Request");
-        }
-    }
+	}
 
-    private static WorkerInfo getWorker(String id) {
-        synchronized (activeWorkers_) {
-            for (WorkerInfo worker : activeWorkers_) {
-                if (worker.id_.equals(id)) {
-                    return worker;
-                }
-            }
-        }
-        return null;
-    }
+	private static String handlePingRoute(Request req, Response res) {
+		if (req.queryParams("id") == null) {
+			res.status(400, "Error: ID is missing");
+			return "400 Error: ID is missing";
+		}
+		if (req.queryParams("port") == null) {
+			res.status(400, "Error: ID is missing");
+			return "400 Error: Port is missing";
+		}
 
-    private static String getWorkers() {
-        if (activeWorkers_.size() == 0) {
-            return "0\n";
-        }
+		String id = req.queryParams("id");
+		int port = Integer.parseInt(req.queryParams("port"));
+		if (activeWorkerNodes.containsKey(id)) {
+			workerNode node = activeWorkerNodes.get(id);
+			node.ip = req.ip();
+			node.port = port;
+			node.lastActive = System.currentTimeMillis();
+			activeWorkerNodes.put(id, node);
+		} else {
+			workerNode node = new workerNode();
+			node.id = id;
+			node.ip = req.ip();
+			node.port = port;
+			node.lastActive = System.currentTimeMillis();
+			activeWorkerNodes.put(id, node);
+		}
+		return "OK";
+	}
 
-        StringBuilder toReturn = new StringBuilder();
-        toReturn.append(activeWorkers_.size());
-        synchronized (activeWorkers_) {
-            for (WorkerInfo worker : activeWorkers_) {
-                if (System.currentTimeMillis() - worker.lastPing_ <= 15 * 1000) {
-                    toReturn.append("\n");
-                    toReturn.append(String.format("%s,%s:%d", worker.id_, worker.ip_, worker.portNumber_));
-                }
-            }
-        }
-        return toReturn.toString();
-    }
+	private static String getWorkersList(Request req, Response res) {
+		String workersInfo = "";
+		int activeNodes = 0;
+		for (Map.Entry<String, workerNode> entry : activeWorkerNodes.entrySet()) {
+			workerNode node = entry.getValue();
+			if (System.currentTimeMillis() - node.lastActive <= 15000) {
+				activeNodes += 1;
+				String nodeInfo = node.id + "," + node.ip + ":" + node.port;
+				workersInfo += nodeInfo;
+				workersInfo += "\n";
+			}
+		}
+
+		workersInfo = Integer.toString(activeNodes) + "\n" + workersInfo;
+		return workersInfo;
+	}
+
+	public static void registerRoutes() {
+
+		get("/ping", (req, res) -> {
+			return handlePingRoute(req, res);
+		});
+
+		get("/workers", (req, res) -> {
+			return getWorkersList(req, res);
+		});
+
+	}
+
+	public static void main() {
+
+		Runnable removeInactiveWorkers = () -> {
+
+			for (Map.Entry<String, workerNode> entry : activeWorkerNodes.entrySet()) {
+				workerNode node = entry.getValue();
+				if (System.currentTimeMillis() - node.lastActive > 15000) {
+					activeWorkerNodes.remove(node.id);
+				}
+			}
+
+			try {
+				Thread.sleep(1500);
+			} catch (InterruptedException e) {
+				System.out.println("Error at thread sleep in removeInactiveWorkers");
+				e.printStackTrace();
+			}
+		};
+
+		Thread thread = new Thread(removeInactiveWorkers);
+		thread.start();
+	}
+
 }

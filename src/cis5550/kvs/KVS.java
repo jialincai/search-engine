@@ -6,6 +6,7 @@ import java.io.IOException;
 
 public interface KVS {
   void put(String tableName, String row, String column, byte value[]) throws FileNotFoundException, IOException;
+  void batchPut(String tableName, String row, String column, byte value[]) throws FileNotFoundException, IOException;
   void putRow(String tableName, Row row) throws FileNotFoundException, IOException;
   Row getRow(String tableName, String row) throws FileNotFoundException, IOException;
   boolean existsRow(String tableName, String row) throws FileNotFoundException, IOException;

@@ -32,7 +32,7 @@ public interface FlamePairRDD {
   // invocation should use the result of the previous one. v is the result of the
   // last invocation.
 
-	public FlamePairRDD foldByKey(String zeroElement, TwoStringsToString lambda) throws Exception;
+  public FlamePairRDD foldByKey(String zeroElement, TwoStringsToString lambda) throws Exception;
 
   // saveAsTable() should cause a table with the specified name to appear 
   // in the KVS that contains the data from this PairRDD. The table should 

@@ -1,72 +1,95 @@
 package cis5550.flame;
 
-import java.util.*;
+import java.util.List;
 
+import cis5550.kvs.KVSClient;
 import cis5550.kvs.Row;
 import cis5550.tools.Serializer;
 
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.io.Serializable;
+
 public class FlamePairRDDImpl implements FlamePairRDD {
-    String tableName_;
-    FlameContextImpl context_;
+	
+	private String tableName;
+	
+	KVSClient kvs;
+	
+	FlamePairRDDImpl(String tableName, KVSClient kvs){
+		this.tableName = tableName;
+		this.kvs = kvs;
+	}
+	
+	public String getTableName() {
+		return this.tableName;
+	}
+	
+	public List<FlamePair> collect() throws Exception {
+		
+		List <FlamePair> PairRDDElements = new ArrayList<FlamePair>();
+		Iterator<Row> tableRows = kvs.scan(tableName);
+		
+		while(tableRows.hasNext()) {
+			Row row = tableRows.next();
+			for (String column : row.columns()) {
+				FlamePair flamePair = new FlamePair(row.key(), row.get(column));
+				PairRDDElements.add(flamePair);
+			}
+		}
+		
+		return PairRDDElements;
+		
+	}
 
-    public FlamePairRDDImpl(String tableName, FlameContextImpl context) {
-        tableName_ = tableName;
-        context_ = context;
-    }
+	public FlamePairRDD foldByKey(String zeroElement, TwoStringsToString lambda) throws Exception {
+		
+		FlameContextImpl flameContext = new FlameContextImpl("dummyJarName.jar", kvs);
+		String outputTable = flameContext.invokeOperation("/pairrdd/foldByKey", tableName, Serializer.objectToByteArray(lambda), lambda, zeroElement);
+		FlamePairRDD flamePairRDD = new FlamePairRDDImpl(outputTable, kvs);
+		return flamePairRDD;
+	}
 
-    @Override
-    public List<FlamePair> collect() throws Exception {
-        List<FlamePair> allValues = new LinkedList<>();
-        Iterator<Row> iter = Master.kvs.scan(tableName_);
+	@Override
+	public void saveAsTable(String tableNameArg) throws Exception {
+		kvs.rename(tableName, tableNameArg);
+		tableName = tableNameArg;
+		
+	}
 
-        while (iter.hasNext()) {
-            Row row = iter.next();
-            for (String column : row.columns()) {
-                allValues.add(new FlamePair(row.key(), row.get(column)));
-            }
-        }
-        return allValues;
-    }
+	public FlameRDD flatMap(PairToStringIterable lambda) throws Exception {
+		
+		FlameContextImpl flameContext = new FlameContextImpl("dummyJarName.jar", kvs);
+		String outputTable = flameContext.invokeOperation("/pairrdd/flatMap", tableName, Serializer.objectToByteArray(lambda), lambda, null);
+		FlameRDD flameRDD = new FlameRDDImpl(outputTable, kvs);
+		return flameRDD;
+	}
 
-    @Override
-    public FlamePairRDD foldByKey(String zeroElement, TwoStringsToString lambda) throws Exception {
-        String resTable = context_.invokeOperation("/pairRdd/foldByKey", Serializer.objectToByteArray(lambda),
-                new String(tableName_), zeroElement);
-        return new FlamePairRDDImpl(resTable, context_);
-    }
+	public FlamePairRDD flatMapToPair(PairToPairIterable lambda) throws Exception {
+		
+		FlameContextImpl flameContext = new FlameContextImpl("dummyJarName.jar", kvs);
+		String outputTable = flameContext.invokeOperation("/pairrdd/mapToPair", tableName, Serializer.objectToByteArray(lambda), lambda, null);
+		FlamePairRDD flamePairRDD = new FlamePairRDDImpl(outputTable, kvs);
+		return flamePairRDD;
+	}
 
-    @Override
-    public void saveAsTable(String tableNameArg) throws Exception {
-        Master.kvs.rename(tableName_, tableNameArg);
-        tableName_ = tableNameArg;
-    }
+	public FlamePairRDD join(FlamePairRDD other) throws Exception {
+		
+		FlameContextImpl flameContext = new FlameContextImpl("dummyJarName.jar", kvs);
+		FlamePairRDDImpl otherTable = (FlamePairRDDImpl) other;
+		String outputTable = flameContext.invokeOperation("/pairrdd/join", tableName, null, null, otherTable.getTableName());
+		FlamePairRDD flamePairRDD = new FlamePairRDDImpl(outputTable, kvs);
+		return flamePairRDD;
+	}
 
-    @Override
-    public FlameRDD flatMap(PairToStringIterable lambda) throws Exception {
-        String resTable = context_.invokeOperation("/pairRdd/flatMap", Serializer.objectToByteArray(lambda),
-                new String(tableName_), null);
-        return new FlameRDDImpl(resTable, context_);
-    }
-
-    @Override
-    public FlamePairRDD flatMapToPair(PairToPairIterable lambda) throws Exception {
-        String resTable = context_.invokeOperation("/pairRdd/flatMapToPair",
-                Serializer.objectToByteArray(lambda),
-                new String(tableName_), null);
-        return new FlamePairRDDImpl(resTable, context_);
-    }
-
-    @Override
-    public FlamePairRDD join(FlamePairRDD other) throws Exception {
-        String resTable = context_.invokeOperation("/pairRdd/join", null,
-                new String(tableName_), ((FlamePairRDDImpl) other).tableName_);
-        return new FlamePairRDDImpl(resTable, context_);
-    }
-
-    @Override
-    public FlamePairRDD cogroup(FlamePairRDD other) throws Exception {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'cogroup'");
-    }
-
+	public FlamePairRDD cogroup(FlamePairRDD other) throws Exception {
+		
+		FlameContextImpl flameContext = new FlameContextImpl("dummyJarName.jar", kvs);
+		FlamePairRDDImpl otherTable = (FlamePairRDDImpl) other;
+//		System.out.println("Other table name : " +  otherTable.getTableName());
+		String outputTable = flameContext.invokeOperation("/pairrdd/cogroup", tableName, null, null, otherTable.getTableName());
+		FlamePairRDD flamePairRDD = new FlamePairRDDImpl(outputTable, kvs);
+		return flamePairRDD;
+	}
+	
 }

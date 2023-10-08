@@ -1,325 +1,801 @@
 package cis5550.jobs;
 
 import java.io.*;
-import java.net.*;
-import java.nio.charset.Charset;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
+
 
 import cis5550.flame.*;
 import cis5550.kvs.*;
-import cis5550.tools.*;
+import cis5550.tools.Hasher;
+import cis5550.tools.URLParser;
+//import cis5550.kvs.*;
+//import cis5550.webserver.*;
 
 public class Crawler {
-    public static void run(FlameContext _ctx, String _args[]) throws Exception {
-        // Check the command-line arguments
-        if (_args.length < 1) {
-            _ctx.output("Syntax: Crawler <seedURL> <blacklistFile>");
-            return;
-        }
+	
+	private static int totalCount = 0;
+	private static int pageCount = 0;
+	
+	private static int countOccurences(String input, char targetChar) {
+		
+		int count = 0;
+		for (int i = 0; i < input.length(); i++) {
+		    if (input.charAt(i) == targetChar) {
+		        count++;
+		    }
+		}
+		return count; 
+	}
 
-        URL seedURL = new URL(normalizeURL(_args[0]));
-        FlameRDD urlsToVisit = _ctx.parallelize(Arrays.asList(seedURL.toString()));
+	
+	private static List<String> extractURLs(String baseURL, byte[] pageBytes, FlameContext flameContext) throws IOException {
+		
+		FileWriter fw = null;
+		try {
+			fw = new FileWriter("extractedShivani.txt",true);
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		// **********************************
+		
+        PrintWriter out = new PrintWriter(fw);
+		String ANCHOR_TAG = "a";
+//		KVSClient kvs = flameContext.getKVS();
+		
+		List<String> extractedURLs = new ArrayList<String> ();
+		String page = new String(pageBytes, StandardCharsets.UTF_8);
+		
+		Pattern pattern = Pattern.compile("<(?!/)[^>]*>", Pattern.DOTALL); // get opening tag
+//		Pattern pattern = Pattern.compile("\\<(.*?)\\>"); // get opening tag
+        Matcher matcher = pattern.matcher(page);
         
-        while (urlsToVisit.count() != 0) {
-            urlsToVisit = urlsToVisit.flatMap(urlString -> {
-                int responseCode;
-                Map<String, List<String>> responseHeaders = new HashMap<>();
-                boolean getPageContent = false;
-
-                urlString = normalizeURL(urlString);
-                URL url = new URL(urlString);
-                KVSClient kvs = _ctx.getKVS();
-                List<String> urlsToReturn = new ArrayList<>();
-
-                // Return empty set if URL already in crawl table.
-                if (kvs.existsRow("crawl", Hasher.hash(url.toString()))) {
-                    return urlsToReturn;
-                }
-                
-                Row newRow = new Row(Hasher.hash(url.toString()));
-                newRow.put("url", url.toString());
-
-                // Adhere to crawl-delay and robots.txt
-                String[] urlParts = URLParser.parseURL(url.toString());
-                String host = urlParts[1];
-                // First time visiting this host, retrieve robots.txt
-                if (!kvs.existsRow("hosts", Hasher.hash(host))) {
-                    URL robotURL = new URL(String.format("%s://%s:%s/robots.txt", urlParts[0], urlParts[1], urlParts[2]));
-                    HttpURLConnection RobotConnection = (HttpURLConnection) robotURL.openConnection();
-                    RobotConnection.setRequestMethod("GET");
-                    RobotConnection.setRequestProperty("User-Agent", "cis5550-crawler");
-                    responseCode = RobotConnection.getResponseCode();
-
-                    if (responseCode == 200) {
-                        byte[] content = getResponseContent(RobotConnection);
-                        kvs.put("hosts", Hasher.hash(host), "robots.txt", content);
-                    }
-                    kvs.put("hosts", Hasher.hash(host), "last-access", Integer.toString(0));
-                }
-
-                byte[] roboText = kvs.get("hosts", Hasher.hash(host), "robots.txt");
-                if (canCrawl(roboText, urlString, _ctx)) {
-                    Long crawlDelay = Long.parseLong(new String(_ctx.getKVS().get("hosts", Hasher.hash(host), "crawl-delay"), StandardCharsets.UTF_8)) * 1000;
-                    Long lastAccess = Long.parseLong(new String(_ctx.getKVS().get("hosts", Hasher.hash(host), "last-access"), StandardCharsets.UTF_8));
-                    if (System.currentTimeMillis() - lastAccess < crawlDelay) {
-                        urlsToReturn.add(urlString);
-                        return urlsToReturn;
-                    }
-                } else {
-                    return urlsToReturn;
-                }
-
-                kvs.put("hosts", Hasher.hash(host), "last-access", Long.toString(System.currentTimeMillis()));
-
-                // Send HEAD request and update column values.
-                HttpURLConnection HEADconnection = (HttpURLConnection) url.openConnection();
-                HEADconnection.setRequestMethod("HEAD");
-                HEADconnection.setRequestProperty("User-Agent", "cis5550-crawler");
-
-                responseCode = HEADconnection.getResponseCode();
-                // Make response headers case-insensitive.
-                Map<String, List<String>> caseSensitiveResponseHeaders = HEADconnection.getHeaderFields();
-                for (var entry : caseSensitiveResponseHeaders.entrySet()) {
-                    if (entry.getKey() != null) {
-                        List<String> lowercaseList = entry.getValue().stream()
-                                                                     .map(String::toLowerCase)
-                                                                     .collect(Collectors.toList());
-                        responseHeaders.put(entry.getKey().toLowerCase(), lowercaseList);
-                    }
-                }
-
-                if (_ctx.getKVS().get("crawl", Hasher.hash(url.toString()), "responseCode") != null) {
-                    byte[] result = _ctx.getKVS().get("crawl", Hasher.hash(url.toString()), "responseCode");
-                    Integer.parseInt(new String(result, StandardCharsets.UTF_8));
-                    newRow.put("responseCode", Integer.toString(responseCode));
-                } else {
-                    newRow.put("responseCode", Integer.toString(responseCode));
-                }
-                
-                if (responseHeaders.get("content-type") != null) {
-                    String type = responseHeaders.get("content-type").get(0);
-                    newRow.put("contentType", type);
-                    if (type.equals("text/html")) {
-                        getPageContent = true;
-                    }
-                }
-                if (responseHeaders.get("content-length") != null) {
-                    newRow.put("length", responseHeaders.get("content-length").get(0));
-                }
-
-                // Handle redirects.
-                List<Integer> redirectCodes = new ArrayList<>(Arrays.asList(301, 302, 303, 307, 308));
-                if (redirectCodes.contains(responseCode) && responseHeaders.get("location") != null) {
-                    urlsToReturn.add(normalizeURL(url.toString(), responseHeaders.get("location").get(0)));
-                }
-                
-                HEADconnection.disconnect();
-
-                // Send GET request and update column values.
-                if (responseCode == 200 && getPageContent) {
-                    HttpURLConnection GETconnection = (HttpURLConnection) url.openConnection();
-                    GETconnection.setRequestMethod("GET");
-                    GETconnection.setRequestProperty("User-Agent", "cis5550-crawler");
-                    
-                    responseCode = GETconnection.getResponseCode();
-                    
-                    byte[] pageContent = getResponseContent(GETconnection);
-                    newRow.put("page", pageContent);
-                    GETconnection.disconnect();
-                    
-                    urlsToReturn = extractURLs(pageContent);
-                    for (int i = 0; i < urlsToReturn.size(); i++) {
-                        urlsToReturn.set(i, normalizeURL(url.toString(), urlsToReturn.get(i)));
-                    }
-                }
-
-                kvs.putRow("crawl", newRow);
-                return urlsToReturn; 
-		    });
-            Thread.sleep(1000);
-        }
-        
-        _ctx.output("OK");
-    }
-
-    private static String readLine(BufferedReader reader) {
-        try {
-            return reader.readLine();
-        } catch (IOException e) {
-            return null;
-        }
-    }
-
-    private static String stripComments(String line) {
-        int index = line.indexOf("#");
-        if (index != -1) {
-            return line.substring(0, index).trim();
-        }
-        return line.trim();
-    }
-
-    static boolean canCrawl(byte[] robotsContent, String url, FlameContext ctx) throws IOException {
-        String [] urlParts = URLParser.parseURL(url);
-        String robotsString = new String(robotsContent, StandardCharsets.UTF_8).toLowerCase();
-        int startIndex;
-        boolean canCrawl = true;
-        boolean useDefaultDelay = true;
-
-        // Get lines of robots.txt relavant to this crawler.
-        Pattern cis5550Agent = Pattern.compile("user-agent\\s*:\\s*cis5550-crawler\\s*");
-        Pattern wildAgent = Pattern.compile("user-agent\\s*:\\s*\\*\\s*");
-        Matcher cis5550Matcher = cis5550Agent.matcher(robotsString);
-        Matcher wildMatcher = wildAgent.matcher(robotsString);
-
-        if (cis5550Matcher.find()) {
-            startIndex = cis5550Matcher.start();
-        } else if (wildMatcher.find()) {
-            startIndex = wildMatcher.start();
-        } else {
-            // NO RULES FOUND
-            ctx.getKVS().put("hosts", Hasher.hash(urlParts[1]), "crawl-delay", Integer.toString(1));
-            return canCrawl;
-        }
-
-        int endIndex = robotsString.indexOf("user-agent:", startIndex + 1);
-        if (endIndex != -1) {
-            robotsString = robotsString.substring(startIndex, endIndex + 1);
-        } else {
-            robotsString = robotsString.substring(startIndex);
-        }
-
-        // Parse lines
-        BufferedReader reader = new BufferedReader(new StringReader(robotsString));
-        String line;
-        while ((line = readLine(reader)) != null) {
-            line = stripComments(line);
-            if (line.length() == 0) {
-                continue;
-            }
-
-            String[] pair = line.split(":");
-            for (int i = 0; i < pair.length; i++) {
-                pair[i] = pair[i].trim();
-            }
-
-            // TODO handle *, $, ? signs
-            if (pair[0].equals("crawl-delay")) {
-                ctx.getKVS().put("hosts", Hasher.hash(urlParts[1]), "crawl-delay", pair[1]);
-                useDefaultDelay = false;
-            } else if (url.indexOf(pair[1]) != -1) {
-                if (pair[0].equals("disallow")) {
-                    canCrawl = false;
-                }
-                break;
-            }
-        }
-
-        if (useDefaultDelay) {
-            ctx.getKVS().put("hosts", Hasher.hash(urlParts[1]), "crawl-delay", Integer.toString(1));
-        }
-
-        return canCrawl;
-    }
-
-    static byte[] getResponseContent(HttpURLConnection connection) throws IOException {
-        byte[] content;
-        
-        InputStream in = connection.getInputStream();
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-
-        byte[] buffer = new byte[1024];
-        int bytesRead;
-        while ((bytesRead = in.read(buffer)) != -1) {
-            out.write(buffer, 0, bytesRead);
-        }
-        content = out.toByteArray();
-        in.close();
-        out.close();
-
-        return content;
-    }
-
-    static List<String> extractURLs(byte[] html) {
-        List<String> urlList = new ArrayList<>();
-        
-        String htmlString = new String(html, StandardCharsets.UTF_8);
-        Pattern pattern = Pattern.compile("<(?!/).*?>");
-        Matcher matcher = pattern.matcher(htmlString);
-
         while (matcher.find()) {
+        	
             String tag = matcher.group();
-            String[] tagComponents = tag.substring(1, tag.length() - 1).split(" ");
-
-            for (String component : tagComponents) {
-                component = component.trim().toLowerCase();
-            }
-
-            if (tagComponents[0].equals("a")) {
-                for (String component : tagComponents) {
-                    if (component.indexOf("href=") == 0) {
-                        String url = component.substring(5).trim().replaceAll("\"$", "").replaceAll("^\"", "");
-                        urlList.add(url);
-                    }
-                }
-            }
-        }
-
-        return urlList;
-    }
-
-    static String normalizeURL(String seed) {
-        String[] urlParts = URLParser.parseURL(seed);
-        if (urlParts[2] == null) {
-            int port;
-            if (urlParts[0].equals("http")) {
-               port = 80;
-            } else if (urlParts[0].equals("https")) {
-                port = 443;
-            } else {
-                return null;
-            }
-            return String.format("%s://%s:%d%s", urlParts[0], urlParts[1], port, urlParts[3]);
-        } else {
-            return seed;
-        }
-    }
-
-    static String normalizeURL(String base, String anchorLink) {
-        // Strip #[remainder]
-        if (anchorLink.indexOf("#") >= 0) {
-            anchorLink = anchorLink.substring(0, anchorLink.indexOf("#") + 1);
-        }
-        if (anchorLink.isEmpty()) {
-            return null;
-        }
-
-        String[] baseParts = URLParser.parseURL(base);
-        String[] anchorParts = URLParser.parseURL(anchorLink);
-        if (anchorParts[1] != null) {
-            // External link - different host
-            return normalizeURL(anchorLink);
-        } else if (anchorParts[3].charAt(0) == '/') {
-            // Absolute Link
-            return String.format("%s://%s:%s%s", baseParts[0], baseParts[1], baseParts[2], anchorParts[3]);
-        } else {
-            // Relative Link
-            baseParts[3] = baseParts[3].substring(0, baseParts[3].lastIndexOf("/"));
+            String tagContent = tag.substring(1, tag.length()-1);
+            String[] tagContentSplit = tagContent.split(" ");
             
-            String[] anchorLinkPath = anchorParts[3].split("/");
-            String toAppend = "";
-            for (String elem : anchorLinkPath) {
-                if (elem.equals("..")) {
-                    baseParts[3] = baseParts[3].substring(0, baseParts[3].lastIndexOf("/"));
-                } else {
-                    toAppend += "/" + elem;
-                }
+            if (tagContentSplit.length>0 && tagContentSplit[0].equalsIgnoreCase(ANCHOR_TAG)) {
+            	
+            	int i = 1;
+            	while (i < tagContentSplit.length && !tagContentSplit[i].toLowerCase().startsWith("href"))
+            		i += 1;
+            	
+            	if (i < tagContentSplit.length && tagContentSplit[i].toLowerCase().startsWith("href")) {
+	            	String extractedURL = tagContentSplit[i].substring(tagContentSplit[i].indexOf("=")+1);
+	            	extractedURL = extractedURL.substring(1, extractedURL.length()-1);
+	            	extractedURLs.add(extractedURL);
+	            	out.println(extractedURL);
+	            	
+//	            	int anchorContentBegin = matcher.end();
+	            	
+//	            	if(page.charAt(anchorContentBegin) != '<') {
+//	            		
+//	            		int anchorContentEnd = page.indexOf("</a", anchorContentBegin);
+//	            		String anchorContent = page.substring(anchorContentBegin, anchorContentEnd);
+//	            		
+//	            		String colKey = "anchor:"+baseURL;
+//	            		if (kvs.get("anchorContent", extractedURL, colKey) == null) {
+//	            			kvs.put("anchorContent", extractedURL, colKey, anchorContent.getBytes());
+//	            		} else {
+//	            			
+//	            			String prevAnchorContent = new String(kvs.get("anchorContent", extractedURL, colKey));
+//	            			kvs.put("anchorContent", extractedURL, colKey, (prevAnchorContent+anchorContent).getBytes());
+//	            		}
+//	            		
+//	            	}
+            	}
+            	
+            	
             }
-            
-            return String.format("%s://%s:%s%s", baseParts[0], baseParts[1], baseParts[2], baseParts[3] + toAppend);
         }
+        out.close();
+        
+        return extractedURLs;
+	}
+
+	
+	private static boolean isBlacklisted(String url, List<Pattern> BLACKLISTED_PATTERNS) {
+		
+        if (BLACKLISTED_PATTERNS.size() == 0) {
+            return false;
+        }
+        
+        for (Pattern pattern : BLACKLISTED_PATTERNS) {
+        	
+            Matcher matcher = pattern.matcher(url);
+            if (matcher.matches()) {           	
+                return true;
+            }
+        }
+        return false;
     }
+	
+	
+	private static List<String> normalizeURLs(String baseURL, List<String> URLs, List<String> robotRules, List<Pattern> BLACKLISTED_PATTERNS, FlameContext flameContext) throws IOException {
+		
+		
+		FileWriter fw = null;
+		try {
+			fw = new FileWriter("normalizedShivani.txt",true);
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		// **********************************
+		
+        PrintWriter out = new PrintWriter(fw);
+        
+        FileWriter fw2 = null;
+		try {
+			fw2 = new FileWriter("preNormalizedShivani.txt",true);
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		// **********************************
+		
+        PrintWriter outpre = new PrintWriter(fw2);
+        
+		String[] parsedBaseURL = URLParser.parseURL(baseURL);
+		
+		if(parsedBaseURL[2] == null || parsedBaseURL[2].equals("")) {
+			if(parsedBaseURL[0].toLowerCase().equals("http"))
+				parsedBaseURL[2] = "80";
+			else 
+				parsedBaseURL[2] = "443";
+		}
+		
+		if (parsedBaseURL[3].indexOf("#") != -1)
+			parsedBaseURL[3] = parsedBaseURL[3].substring(0, parsedBaseURL[3].indexOf("#"));
+		
+		List<String> normalizedURLs = new ArrayList<String>();
+		
+		for (String url: URLs) {
+			
+			String normalizedURL = url;
+			
+			if (normalizedURL!=null && normalizedURL.indexOf("#") != -1)
+				normalizedURL = normalizedURL.substring(0, normalizedURL.indexOf("#"));
+			
+			if (normalizedURL!=null && normalizedURL.equals("") || normalizedURL.equals("/")) {
+				continue;
+			}
+			
+			String[] parsedNormalizedURL = URLParser.parseURL(normalizedURL);
+			
+			String baseURLprefix = "";
+			
+			if (parsedBaseURL[3]!=null && parsedBaseURL[3].lastIndexOf('/') > 0) {
+				baseURLprefix = parsedBaseURL[0] + "://" + parsedBaseURL[1] + ":" + parsedBaseURL[2] + parsedBaseURL[3].substring(0, parsedBaseURL[3].lastIndexOf('/'));
+			} else {
+				baseURLprefix = parsedBaseURL[0] + "://" + parsedBaseURL[1] + ":" + parsedBaseURL[2] + parsedBaseURL[3];
+			}
+			
+			if (parsedNormalizedURL[0]!=null &&
+					!parsedNormalizedURL[0].equalsIgnoreCase("http") &&
+					!parsedNormalizedURL[0].equalsIgnoreCase("https")) {
+				continue;
+			}
+				
+			
+			if (parsedNormalizedURL[0] == null) {
+				parsedNormalizedURL[0] = parsedBaseURL[0];
+			}
+			
+			if (parsedNormalizedURL[1] == null) {
+				parsedNormalizedURL[1] = parsedBaseURL[1];
+			}
+			
+			if (parsedNormalizedURL[2] == null || parsedNormalizedURL[2] == "") {
+				if (parsedNormalizedURL[0].equalsIgnoreCase("http")) {
+					parsedNormalizedURL[2] = "80";
+				} else {
+					parsedNormalizedURL[2] = "443";
+				}
+			} 
+			
+//			if (parsedNormalizedURL[0]!=null && parsedNormalizedURL[0].equalsIgnoreCase("https")) {
+//				
+//				if (parsedNormalizedURL[2] == null || parsedNormalizedURL[2] == "") {
+//					parsedNormalizedURL[2] = "80";
+//				}
+//				normalizedURL = parsedNormalizedURL[0] + "://" + parsedNormalizedURL[1] + ":" + parsedNormalizedURL[2] + parsedNormalizedURL[3];
+//				
+//			} else if (parsedNormalizedURL[0]!=null && parsedNormalizedURL[0].equalsIgnoreCase("http")) {
+//				
+//				if (parsedNormalizedURL[2] == null || parsedNormalizedURL[2] == "") {
+//					parsedNormalizedURL[2] = "443";
+//				}
+//				normalizedURL = parsedNormalizedURL[0] + "://" + parsedNormalizedURL[1] + ":" + parsedNormalizedURL[2] + parsedNormalizedURL[3];
+//				
+//			} else 
+			if (normalizedURL.toLowerCase().endsWith(".jpg") 
+					   || normalizedURL.toLowerCase().endsWith(".jpeg")
+					   || normalizedURL.toLowerCase().endsWith(".gif")
+					   || normalizedURL.toLowerCase().endsWith(".png")
+					   || normalizedURL.toLowerCase().endsWith(".txt")) {
+				
+				continue;
+			} else {
+				
+				String relativeLink = parsedNormalizedURL[3];
+				if (relativeLink.length() > 0 && relativeLink.charAt(0) == '/') { // Absolute paths lacking hostname
+					
+//					baseURLprefix = baseURLprefix.substring(0, baseURLprefix.indexOf('/', 8)); // third occurence of '/'
+//					normalizedURL = baseURLprefix + normalizedURL;
+
+				} else {
+				
+					while (relativeLink!=null && relativeLink.startsWith("..")) {
+						
+						if (countOccurences(baseURLprefix, '/') > 3)
+							baseURLprefix = baseURLprefix.substring(0, baseURLprefix.lastIndexOf('/'));
+						
+						relativeLink = relativeLink.substring(relativeLink.indexOf('/'));
+					}
+					
+					String baseURLRelative = URLParser.parseURL(baseURLprefix)[3];
+					if (baseURLRelative!=null && baseURLRelative.endsWith("/")) {
+						parsedNormalizedURL[3] = URLParser.parseURL(baseURLprefix)[3] + relativeLink;
+						
+//						relativeLink = baseURLprefix + relativeLink;
+					}
+					else
+						parsedNormalizedURL[3] = baseURLRelative + "/" + relativeLink; // relative path	
+
+				}
+			}
+			
+			normalizedURL = parsedNormalizedURL[0] + "://" + parsedNormalizedURL[1] + ":" + parsedNormalizedURL[2] + parsedNormalizedURL[3];
+			
+			String[] parsedNURL = URLParser.parseURL(normalizedURL);
+			
+			String relativeURL = parsedNURL[3];
+			
+			if(isBlacklisted(normalizedURL, BLACKLISTED_PATTERNS)) {	
+				System.out.println("Blacklisted URL : "+normalizedURL);
+				continue;
+			}
+			
+			boolean disallow = false;
+			for (int i = 1; i < robotRules.size(); i+=2) {
+				
+				if(relativeURL.startsWith(robotRules.get(i))) {
+					if (robotRules.get(i+1).equals("disallow")) {
+						disallow = true;
+					}
+					break;
+				}
+			}
+			
+			if(disallow)
+				continue;
+			
+//			KVSClient kvs = flameContext.getKVS();
+			
+//		/*
+//		 	if (kvs.existsRow("crawl", Integer.toString(normalizedURL.hashCode()))) {
+//		 		
+//		 		Row row = kvs.getRow("crawl", Integer.toString(normalizedURL.hashCode()));
+//		 		Row anchorRow = kvs.getRow("anchorContent", url);
+//		 		
+//		 		row.
+//		 		kvs.putRow(baseURL, anchorRow)
+//		 	}
+//		 */
+//			if(kvs.existsRow("anchorContent", url)) {
+//				Row row = kvs.getRow("anchorContent", url);
+//			}
+				
+			normalizedURLs.add(normalizedURL);	
+			out.println(normalizedURL);
+			outpre.println(baseURL);
+			outpre.println(url);
+			
+		}
+		
+		out.close();
+		outpre.close();
+		return normalizedURLs;
+	}
+
+	
+	private static List<String> getUserAgentRules(String robotBody, String userAgent) {
+		      
+		String crawlDelay = null;
+
+		List<String> rules = new ArrayList<String>();
+		rules.add(crawlDelay);
+		
+		if (robotBody.equals("#")) {		
+			return rules;
+		}
+		
+		int fromIndex = 0;
+		String userAgentTag = "User-agent: ";
+		String allowTag = "Allow: ";
+		String disallowTag = "Disallow: ";
+		String crawlDelayTag = "Crawl-delay: ";
+		
+		while (robotBody.indexOf(userAgentTag, fromIndex) != -1) {
+			
+			int index = robotBody.indexOf(userAgentTag, fromIndex);
+			int beginAgent = index + userAgentTag.length();
+			int endAgent = robotBody.indexOf("\n", index);
+			String agent = robotBody.substring(beginAgent, endAgent);
+			String agentInfo = "";
+			
+			
+			if (robotBody.indexOf("\n\n", endAgent+1) == -1 && endAgent+1 < robotBody.length()) {
+				agentInfo = robotBody.substring(endAgent+1);
+			} else {
+				agentInfo = robotBody.substring(endAgent+1, robotBody.indexOf("\n\n", endAgent+1));
+			}
+			
+			agentInfo += "\n";
+			
+			if (agent.equalsIgnoreCase(userAgent) || agent.equals("*")) {
+				
+				while (agentInfo.length() > 0) {
+					if (agentInfo.startsWith(allowTag) && !agentInfo.equals("\n")) {
+						
+						rules.add(agentInfo.substring(allowTag.length(), agentInfo.indexOf("\n")));
+						rules.add("allow");
+					} else if (agentInfo.startsWith(disallowTag)) {
+	
+						rules.add(agentInfo.substring(disallowTag.length(), agentInfo.indexOf("\n")));
+						rules.add("disallow");
+					} else if (agentInfo.startsWith(crawlDelayTag)) {
+						rules.add(0, agentInfo.substring(crawlDelayTag.length(), agentInfo.indexOf("\n")));
+					}
+					
+					if(agentInfo.indexOf("\n")!=-1 && agentInfo.indexOf("\n")+1 < agentInfo.length())
+						agentInfo = agentInfo.substring(agentInfo.indexOf("\n")+1);
+					else
+						agentInfo = "";
+				}
+				
+				if (agent.equalsIgnoreCase(userAgent)) {
+					return rules;
+				}
+			} 
+			
+			fromIndex = endAgent;
+			
+		}
+		
+		return rules;
+	}
+
+		
+	private static List<String> crawl(String URL, FlameContext flameContext, List<Pattern> BLACKLISTED_PATTERNS) throws IOException {
+		
+		FileWriter fw = null;
+		try {
+			fw = new FileWriter("finalShivaniURL.txt",true);
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		// **********************************
+		
+        PrintWriter out = new PrintWriter(fw);
+        
+        FileWriter fw2 = null;
+		try {
+			fw2 = new FileWriter("finalShivaniResponse.txt",true);
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		// **********************************
+		
+        PrintWriter outURL = new PrintWriter(fw);
+        
+		KVSClient kvs = flameContext.getKVS();
+		List<String> normalizedURLs = new ArrayList<String>();
+		
+		
+		String[] parsedURL = URLParser.parseURL(URL);
+		
+		if(parsedURL[2] == null || parsedURL[2].equals("")) {
+			if(parsedURL[0].toLowerCase().equals("http"))
+				parsedURL[2] = "80";
+			else 
+				parsedURL[2] = "443";
+		}
+		
+		if (parsedURL[3].indexOf("#") != -1)
+			parsedURL[3] = parsedURL[3].substring(0, parsedURL[3].indexOf("#"));
+		
+		
+		String normalizedURL = parsedURL[0] + "://" + parsedURL[1] + ":" + parsedURL[2] + parsedURL[3];
+		
+		String rowKeyHash = Hasher.hash(normalizedURL);
+		
+		if (kvs.existsRow("crawl", rowKeyHash)) {
+			return normalizedURLs;
+		}
+		
+		if (parsedURL[1]!= null && !kvs.existsRow("hosts", parsedURL[1])) {
+			
+			String robotsURL = parsedURL[0] + "://" + parsedURL[1] + ":" + parsedURL[2] + "/robots.txt";
+			System.out.println("URL: "+ normalizedURL+ "    robotsURL: " + robotsURL);
+			URL robotsUrl = new URL(robotsURL);
+			HttpURLConnection robotConn = (HttpURLConnection) robotsUrl.openConnection();
+			robotConn.setRequestMethod("GET");
+			robotConn.setRequestProperty("User-Agent", "cis5550-crawler");
+			robotConn.connect();
+			
+			if (robotConn.getResponseCode() == HttpURLConnection.HTTP_OK) {
+				
+				InputStream inputStream = robotConn.getInputStream();	
+				byte[] robotBody = inputStream.readAllBytes(); 	
+				kvs.put("hosts", parsedURL[1], "robots", robotBody);
+			} else {
+				
+				String dummyRobotBody = "#";
+				kvs.put("hosts", parsedURL[1], "robots", dummyRobotBody.getBytes());
+			}
+			
+		}
+		
+		byte[] hostRobotTextBytes = kvs.get("hosts", parsedURL[1], "robots");
+		String hostRobotText = new String(hostRobotTextBytes);
+		List<String> robotRules = getUserAgentRules(hostRobotText, "cis5550-crawler");
+		
+		
+		long RATE_LIMIT_THRESH = 1000;
+		if (robotRules.get(0) != null) {
+			RATE_LIMIT_THRESH = Long.parseLong(robotRules.get(0))*1000;
+		}
+		
+		if(parsedURL[1]!= null) {
+			
+			byte[] lastAccessedTimeBytes = kvs.get("hosts", parsedURL[1], "timeStamp");
+			
+			if (lastAccessedTimeBytes != null) {
+				
+				String lastAccessedTime = new String(lastAccessedTimeBytes);
+				
+				if (System.currentTimeMillis() - Long.parseLong(lastAccessedTime) < RATE_LIMIT_THRESH) {		
+					normalizedURLs.add(normalizedURL);
+					return normalizedURLs;
+				}
+			}
+		}
+		
+		URL url = new URL(normalizedURL);
+		Row row = new Row(rowKeyHash);
+		row.put("url", normalizedURL);	
+		out.println(normalizedURL);
+		
+		HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+		
+		conn.setRequestMethod("HEAD");
+		conn.setRequestProperty("User-Agent", "cis5550-crawler");
+		conn.setInstanceFollowRedirects(false);
+		conn.connect();
+		int responseCode = conn.getResponseCode();
+		String contentType = conn.getHeaderField("Content-Type");
+		String contentLength = conn.getHeaderField("Content-Length");
+		
+		
+		if (contentType != null) 
+			row.put("contentType", contentType);
+		if (contentLength != null) 
+			row.put("contentLength", contentLength);
+		
+		
+		kvs.put("hosts", parsedURL[1], "timeStamp", String.valueOf(System.currentTimeMillis()));
+			
+		if (responseCode == HttpURLConnection.HTTP_OK && contentType.equals("text/html")) {
+			
+			conn.disconnect(); 
+			conn = (HttpURLConnection) url.openConnection();
+			conn.setRequestMethod("GET");
+			conn.setRequestProperty("User-Agent", "cis5550-crawler");
+			conn.setInstanceFollowRedirects(false);
+			conn.connect();
+			
+			responseCode = conn.getResponseCode();
+			row.put("responseCode", Integer.toString(responseCode));
+			outURL.println(Integer.toString(responseCode));
+			
+			if (responseCode == HttpURLConnection.HTTP_OK) {
+				
+				InputStream inputStream = conn.getInputStream();
+
+				byte[] pageBody = inputStream.readAllBytes(); 
+				String pageBodyStr = new String(pageBody);
+				
+				if (kvs.existsRow("pagecontent", Hasher.hash(pageBodyStr))) {
+					
+					row.put("canonicalURL", kvs.get("pagecontent", Hasher.hash(pageBodyStr), "url"));
+				} else {
+					
+					row.put("page", pageBody);		
+					kvs.put("pagecontent", Hasher.hash(pageBodyStr), "url", normalizedURL.getBytes());
+					pageCount += 1;
+					System.out.println("pageCount="+pageCount);
+					List<String> extractedURLs = extractURLs(normalizedURL, pageBody, flameContext);
+					normalizedURLs = normalizeURLs(normalizedURL, extractedURLs, robotRules, BLACKLISTED_PATTERNS, flameContext);
+				}
+
+			}
+			
+		} else if (responseCode == 301 || responseCode == 302 || responseCode == 303 || responseCode == 307 || responseCode == 308) {
+			
+			row.put("responseCode", Integer.toString(responseCode));
+			outURL.println(Integer.toString(responseCode));
+			List<String> redirectedURL = new ArrayList<String>();
+			redirectedURL.add(conn.getHeaderField("Location"));
+			normalizedURLs = normalizeURLs(normalizedURL, redirectedURL, robotRules, BLACKLISTED_PATTERNS, flameContext);
+		} else {
+			row.put("responseCode", Integer.toString(responseCode));
+			outURL.println(Integer.toString(responseCode));
+		}
+		
+		totalCount += 1;
+		System.out.println("totalCount="+totalCount);
+		kvs.putRow("crawl", row);
+
+		out.close();
+		outURL.close();
+		conn.disconnect();
+		
+		return normalizedURLs;
+	}
+	
+	public static void run(FlameContext flameContext, String[] args) throws Exception {
+		
+		if (args.length <= 0) {
+			flameContext.output("Provide atleast one URL (seed URL) to start crawling");
+		} else {
+			flameContext.output("OK");
+		
+		KVSClient kvs1 = flameContext.getKVS();
+		List<Pattern> BLACKLISTED_PATTERNS = new ArrayList<Pattern>();
+		
+//		String pattern1 = "http*://advanced.*.cis5550.net:*/cZl/*.html";
+//		pattern1 = pattern1.replace("*", ".*");
+//		BLACKLISTED_PATTERNS.add(Pattern.compile(pattern1));
+			
+		if (args.length > 1) { // Blacklisted table exists
+			
+			String blackListTable = args[1];
+			
+			Iterator<Row> blackListRows = kvs1.scan(blackListTable);
+			
+			while(blackListRows.hasNext()) {
+				
+				Row row = blackListRows.next();
+				if (row.get("pattern") != null) {
+					String pattern = row.get("pattern");
+					pattern = pattern.replace("*", ".*");
+					BLACKLISTED_PATTERNS.add(Pattern.compile(pattern));
+				}
+			}
+		}
+		try {
+		FlameRDD urlQueue = flameContext.parallelize(Arrays.asList(args[0]));
+		
+//		long duration = 11*60*1000; // duration in milliseconds (5 seconds)
+//        Timer timer = new Timer();
+
+//        // create a timer task to stop the program
+//        TimerTask stopProgram = new TimerTask() {
+//            public void run() {
+//                System.out.println("Time's up! Stopping the program.");
+//                System.exit(0); // abruptly stop the program
+//            }
+//        };
+//
+//        //start the timer task after the specified duration
+//        timer.schedule(stopProgram, duration);
+		
+		while(urlQueue!= null && urlQueue.count() > 0) {
+//				
+//				urlQueue = urlQueue.flatMap(URL -> crawl(URL, flameContext, BLACKLISTED_PATTERNS));
+//	//			Thread.sleep(100);
+				urlQueue = urlQueue.flatMap(URL -> {
+					FileWriter fw = null;
+					try {
+						fw = new FileWriter("finalShivaniURL.txt",true);
+					} catch (IOException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					}
+					// **********************************
+					
+			        PrintWriter out = new PrintWriter(fw);
+			        
+			        FileWriter fw2 = null;
+					try {
+						fw2 = new FileWriter("finalShivaniResponse.txt",true);
+					} catch (IOException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					}
+					// **********************************
+					
+			        PrintWriter outURL = new PrintWriter(fw);
+//			        
+					KVSClient kvs = flameContext.getKVS();
+					List<String> normalizedURLs = new ArrayList<String>();
+					
+					
+					String[] parsedURL = URLParser.parseURL(URL);
+					
+					if(parsedURL[2] == null || parsedURL[2].equals("")) {
+						if(parsedURL[0].toLowerCase().equals("http"))
+							parsedURL[2] = "80";
+						else 
+							parsedURL[2] = "443";
+					}
+					
+					if (parsedURL[3].indexOf("#") != -1)
+						parsedURL[3] = parsedURL[3].substring(0, parsedURL[3].indexOf("#"));
+					
+					
+					String normalizedURL = parsedURL[0] + "://" + parsedURL[1] + ":" + parsedURL[2] + parsedURL[3];
+					
+					String rowKeyHash = Hasher.hash(normalizedURL);
+					
+					if (kvs.existsRow("crawl", rowKeyHash)) {
+						return normalizedURLs;
+					}
+					
+					if (parsedURL[1]!= null && !kvs.existsRow("hosts", parsedURL[1])) {
+						
+						String robotsURL = parsedURL[0] + "://" + parsedURL[1] + ":" + parsedURL[2] + "/robots.txt";
+						System.out.println("URL: "+ normalizedURL+ "    robotsURL: " + robotsURL);
+						URL robotsUrl = new URL(robotsURL);
+						HttpURLConnection robotConn = (HttpURLConnection) robotsUrl.openConnection();
+						robotConn.setRequestMethod("GET");
+						robotConn.setRequestProperty("User-Agent", "cis5550-crawler");
+						robotConn.connect();
+						
+						if (robotConn.getResponseCode() == HttpURLConnection.HTTP_OK) {
+							
+							InputStream inputStream = robotConn.getInputStream();	
+							byte[] robotBody = inputStream.readAllBytes(); 	
+							kvs.put("hosts", parsedURL[1], "robots", robotBody);
+						} else {
+							
+							String dummyRobotBody = "#";
+							kvs.put("hosts", parsedURL[1], "robots", dummyRobotBody.getBytes());
+						}
+						
+					}
+					
+					byte[] hostRobotTextBytes = kvs.get("hosts", parsedURL[1], "robots");
+					String hostRobotText = new String(hostRobotTextBytes);
+					List<String> robotRules = getUserAgentRules(hostRobotText, "cis5550-crawler");
+					
+					
+					long RATE_LIMIT_THRESH = 1000;
+					if (robotRules.get(0) != null) {
+						RATE_LIMIT_THRESH = Long.parseLong(robotRules.get(0))*1000;
+					}
+					
+					if(parsedURL[1]!= null && parsedURL[1]!="" && kvs.existsRow("hosts", parsedURL[1])) {
+						
+						System.out.println("parsedURL[1]="+parsedURL[1]);
+						byte[] lastAccessedTimeBytes = kvs.get("hosts", parsedURL[1], "timeStamp");
+						
+						if (lastAccessedTimeBytes != null) {
+							
+							String lastAccessedTime = new String(lastAccessedTimeBytes);
+							
+							if (System.currentTimeMillis() - Long.parseLong(lastAccessedTime) < RATE_LIMIT_THRESH) {		
+								normalizedURLs.add(normalizedURL);
+								return normalizedURLs;
+							}
+						}
+					}
+					
+					URL url = new URL(normalizedURL);
+					Row row = new Row(rowKeyHash);
+					row.put("url", normalizedURL);	
+					out.println(normalizedURL);
+					
+					HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+					
+					conn.setRequestMethod("HEAD");
+					conn.setRequestProperty("User-Agent", "cis5550-crawler");
+					conn.setInstanceFollowRedirects(false);
+					conn.connect();
+					int responseCode = conn.getResponseCode();
+					String contentType = conn.getHeaderField("Content-Type");
+					String contentLength = conn.getHeaderField("Content-Length");
+					
+					
+					if (contentType != null) 
+						row.put("contentType", contentType);
+					if (contentLength != null) 
+						row.put("contentLength", contentLength);
+					
+					
+					kvs.put("hosts", parsedURL[1], "timeStamp", String.valueOf(System.currentTimeMillis()));
+						
+					if (responseCode == HttpURLConnection.HTTP_OK && contentType.equals("text/html")) {
+						
+						conn.disconnect(); 
+						conn = (HttpURLConnection) url.openConnection();
+						conn.setRequestMethod("GET");
+						conn.setRequestProperty("User-Agent", "cis5550-crawler");
+						conn.setInstanceFollowRedirects(false);
+						conn.connect();
+						
+						responseCode = conn.getResponseCode();
+						row.put("responseCode", Integer.toString(responseCode));
+						outURL.println(Integer.toString(responseCode));
+						
+						if (responseCode == HttpURLConnection.HTTP_OK) {
+							
+							InputStream inputStream = conn.getInputStream();
+		
+							byte[] pageBody = inputStream.readAllBytes(); 
+							String pageBodyStr = new String(pageBody);
+							
+							if (kvs.existsRow("pagecontent", Hasher.hash(pageBodyStr))) {
+								
+								row.put("canonicalURL", kvs.get("pagecontent", Hasher.hash(pageBodyStr), "url"));
+							} else {
+								
+								row.put("page", pageBody);		
+								kvs.put("pagecontent", Hasher.hash(pageBodyStr), "url", normalizedURL.getBytes());
+								pageCount += 1;
+								System.out.println("pageCount="+pageCount);
+								List<String> extractedURLs = extractURLs(normalizedURL, pageBody, flameContext);
+								normalizedURLs = normalizeURLs(normalizedURL, extractedURLs, robotRules, BLACKLISTED_PATTERNS, flameContext);
+							}
+		
+						}
+						
+					} else if (responseCode == 301 || responseCode == 302 || responseCode == 303 || responseCode == 307 || responseCode == 308) {
+						
+						row.put("responseCode", Integer.toString(responseCode));
+						outURL.println(Integer.toString(responseCode));
+						List<String> redirectedURL = new ArrayList<String>();
+						redirectedURL.add(conn.getHeaderField("Location"));
+						normalizedURLs = normalizeURLs(normalizedURL, redirectedURL, robotRules, BLACKLISTED_PATTERNS, flameContext);
+					} else {
+						row.put("responseCode", Integer.toString(responseCode));
+						outURL.println(Integer.toString(responseCode));
+					}
+					
+					totalCount += 1;
+					System.out.println("totalCount="+totalCount);
+					kvs.putRow("crawl", row);
+		
+					out.close();
+					outURL.close();
+					conn.disconnect();
+					Thread.sleep(100);
+					
+					return (Iterable<String>)normalizedURLs;
+				});
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		
+		}
+		
+		return;
+	}
+	
+	public static void main(String[] args) {
+		// TODO Auto-generated method stub
+	}
+	
 }

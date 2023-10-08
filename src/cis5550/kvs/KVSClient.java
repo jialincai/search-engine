@@ -63,6 +63,8 @@ public class KVSClient implements KVS {
     Vector<String> ranges;
 
     KVSIterator(String tableNameArg, String startRowArg, String endRowExclusiveArg) throws IOException {
+    	
+      System.out.println("");
       in = null;
       currentRangeIndex = 0;
       atEnd = false;
@@ -71,19 +73,17 @@ public class KVSClient implements KVS {
       startRow = startRowArg;
       ranges = new Vector<String>();
       if ((startRowArg == null) || (startRowArg.compareTo(getWorkerID(0)) < 0)) {
-        String url = getURL(tableNameArg, numWorkers() - 1, startRowArg,
-            ((endRowExclusiveArg != null) && (endRowExclusiveArg.compareTo(getWorkerID(0)) < 0)) ? endRowExclusiveArg
-                : getWorkerID(0));
+        String url = getURL(tableNameArg, numWorkers()-1, startRowArg, ((endRowExclusiveArg != null) && (endRowExclusiveArg.compareTo(getWorkerID(0))<0)) ? endRowExclusiveArg : getWorkerID(0));
+//        System.out.println("kvs iterator url: " + url);
         ranges.add(url);
       }
-      for (int i = 0; i < numWorkers(); i++) {
-        if ((startRowArg == null) || (i == numWorkers() - 1) || (startRowArg.compareTo(getWorkerID(i + 1)) < 0)) {
+      for (int i=0; i<numWorkers(); i++) {
+        if ((startRowArg == null) || (i == numWorkers()-1) || (startRowArg.compareTo(getWorkerID(i+1))<0)) {
           if ((endRowExclusiveArg == null) || (endRowExclusiveArg.compareTo(getWorkerID(i)) > 0)) {
-            boolean useActualStartRow = (startRowArg != null) && (startRowArg.compareTo(getWorkerID(i)) > 0);
-            boolean useActualEndRow = (endRowExclusiveArg != null)
-                && ((i == (numWorkers() - 1)) || (endRowExclusiveArg.compareTo(getWorkerID(i + 1)) < 0));
-            String url = getURL(tableNameArg, i, useActualStartRow ? startRowArg : getWorkerID(i),
-                useActualEndRow ? endRowExclusiveArg : ((i < numWorkers() - 1) ? getWorkerID(i + 1) : null));
+            boolean useActualStartRow = (startRowArg != null) && (startRowArg.compareTo(getWorkerID(i))>0);
+            boolean useActualEndRow = (endRowExclusiveArg != null) && ((i==(numWorkers()-1)) || (endRowExclusiveArg.compareTo(getWorkerID(i+1))<0));
+            String url = getURL(tableNameArg, i, useActualStartRow ? startRowArg : getWorkerID(i), useActualEndRow ? endRowExclusiveArg : ((i<numWorkers()-1) ? getWorkerID(i+1) : null));
+//            System.out.println("kvs iterator url: " + url);
             ranges.add(url);
           }
         }
@@ -92,15 +92,14 @@ public class KVSClient implements KVS {
       openConnectionAndFill();
     }
 
-    protected String getURL(String tableNameArg, int workerIndexArg, String startRowArg, String endRowExclusiveArg)
-        throws IOException {
+    protected String getURL(String tableNameArg, int workerIndexArg, String startRowArg, String endRowExclusiveArg) throws IOException {
       String params = "";
       if (startRowArg != null)
-        params = "startRow=" + startRowArg;
+        params = "startRow="+startRowArg;
       if (endRowExclusiveArg != null)
-        params = (params.equals("") ? "" : (params + "&")) + "endRowExclusive=" + endRowExclusiveArg;
-      return "http://" + getWorkerAddress(workerIndexArg) + "/data/" + tableNameArg
-          + (params.equals("") ? "" : "?" + params);
+        params = (params.equals("") ? "" : (params+"&"))+"endRowExclusive="+endRowExclusiveArg;
+      
+      return "http://"+getWorkerAddress(workerIndexArg)+"/data/"+tableNameArg+(params.equals("") ? "" : "?"+params);
     }
 
     void openConnectionAndFill() {
@@ -117,11 +116,11 @@ public class KVSClient implements KVS {
           if (currentRangeIndex >= ranges.size()) {
             atEnd = true;
             return;
-          }
+          } 
 
           try {
             URL url = new URL(ranges.elementAt(currentRangeIndex));
-            HttpURLConnection con = (HttpURLConnection) url.openConnection();
+            HttpURLConnection con = (HttpURLConnection)url.openConnection();
             con.setRequestMethod("GET");
             con.connect();
             in = con.getInputStream();
@@ -133,14 +132,11 @@ public class KVSClient implements KVS {
           } catch (FileNotFoundException fnfe) {
           }
 
-          currentRangeIndex++;
+          currentRangeIndex ++;
         }
       } catch (IOException ioe) {
         if (in != null) {
-          try {
-            in.close();
-          } catch (Exception e) {
-          }
+          try { in.close(); } catch (Exception e) {}
           in = null;
         }
         atEnd = true;
@@ -162,10 +158,10 @@ public class KVSClient implements KVS {
       Row r = nextRow;
       nextRow = fill();
       while ((nextRow == null) && !atEnd) {
-        currentRangeIndex++;
+        currentRangeIndex ++;
         openConnectionAndFill();
       }
-
+      
       return r;
     }
 
@@ -175,16 +171,16 @@ public class KVSClient implements KVS {
   }
 
   synchronized void downloadWorkers() throws IOException {
-    String result = new String(HTTP.doRequest("GET", "http://" + master + "/workers", null).body());
+    String result = new String(HTTP.doRequest("GET", "http://"+master+"/workers", null).body());
     String[] pieces = result.split("\n");
     int numWorkers = Integer.parseInt(pieces[0]);
     if (numWorkers < 1)
       throw new IOException("No active KVS workers");
-    if (pieces.length != (numWorkers + 1))
+    if (pieces.length != (numWorkers+1))
       throw new RuntimeException("Received truncated response when asking KVS master for list of workers");
     workers.clear();
-    for (int i = 0; i < numWorkers; i++) {
-      String[] pcs = pieces[1 + i].split(",");
+    for (int i=0; i<numWorkers; i++) {
+      String[] pcs = pieces[1+i].split(",");
       workers.add(new WorkerEntry(pcs[1], pcs[0]));
     }
     Collections.sort(workers);
@@ -193,10 +189,10 @@ public class KVSClient implements KVS {
   }
 
   int workerIndexForKey(String key) {
-    int chosenWorker = workers.size() - 1;
+    int chosenWorker = workers.size()-1;
     if (key != null) {
-      for (int i = 0; i < workers.size() - 1; i++) {
-        if ((key.compareTo(workers.elementAt(i).id) >= 0) && (key.compareTo(workers.elementAt(i + 1).id) < 0))
+      for (int i=0; i<workers.size()-1; i++) {
+        if ((key.compareTo(workers.elementAt(i).id) >= 0) && (key.compareTo(workers.elementAt(i+1).id) < 0))
           chosenWorker = i;
       }
     }
@@ -216,12 +212,9 @@ public class KVSClient implements KVS {
 
     for (WorkerEntry w : workers) {
       try {
-        byte[] response = HTTP.doRequest("PUT",
-            "http://" + w.address + "/rename/" + java.net.URLEncoder.encode(oldTableName, "UTF-8") + "/",
-            newTableName.getBytes()).body();
+        byte[] response = HTTP.doRequest("PUT", "http://"+w.address+"/rename/"+java.net.URLEncoder.encode(oldTableName, "UTF-8")+"/", newTableName.getBytes()).body();
         String result = new String(response);
-      } catch (Exception e) {
-      }
+      } catch (Exception e) {}
     }
   }
 
@@ -231,13 +224,9 @@ public class KVSClient implements KVS {
 
     for (WorkerEntry w : workers) {
       try {
-        byte[] response = HTTP
-            .doRequest("PUT",
-                "http://" + w.address + "/delete/" + java.net.URLEncoder.encode(oldTableName, "UTF-8") + "/", null)
-            .body();
+        byte[] response = HTTP.doRequest("PUT", "http://"+w.address+"/delete/"+java.net.URLEncoder.encode(oldTableName, "UTF-8")+"/", null).body();
         String result = new String(response);
-      } catch (Exception e) {
-      }
+      } catch (Exception e) {}
     }
   }
 
@@ -246,39 +235,56 @@ public class KVSClient implements KVS {
       downloadWorkers();
 
     try {
-      String target = "http://" + workers.elementAt(workerIndexForKey(row)).address + "/data/" + tableName + "/"
-          + java.net.URLEncoder.encode(row, "UTF-8") + "/" + java.net.URLEncoder.encode(column, "UTF-8");
+      String target = "http://"+workers.elementAt(workerIndexForKey(row)).address+"/data/"+tableName+"/"+java.net.URLEncoder.encode(row, "UTF-8")+"/"+java.net.URLEncoder.encode(column, "UTF-8");
       byte[] response = HTTP.doRequest("PUT", target, value).body();
       String result = new String(response);
-      if (!result.equals("OK"))
-        throw new RuntimeException("PUT returned something other than OK: " + result + "(" + target + ")");
+      if (!result.equals("OK")) 
+      	throw new RuntimeException("PUT returned something other than OK: "+result+ "("+target+")");
     } catch (UnsupportedEncodingException uee) {
       throw new RuntimeException("UTF-8 encoding not supported?!?");
-    }
+    } 
   }
+  
+  public void batchPut(String tableName, String row, String column, byte value[]) throws IOException {
+	    if (!haveWorkers)
+	      downloadWorkers();
+
+	    try {
+	      String target = "http://"+workers.elementAt(workerIndexForKey(row)).address+"/batchdata/"+tableName+"/"+java.net.URLEncoder.encode(row, "UTF-8")+"/"+java.net.URLEncoder.encode(column, "UTF-8");
+	      
+//	      System.out.println("target="+target);
+	      byte[] response = HTTP.doRequest("PUT", target, value).body();
+	      String result = new String(response);
+	      if (!result.equals("OK")) 
+	      	throw new RuntimeException("PUT returned something other than OK: "+result+ "("+target+")");
+	    } catch (UnsupportedEncodingException uee) {
+	      throw new RuntimeException("UTF-8 encoding not supported?!?");
+	    } 
+	  }
 
   public void put(String tableName, String row, String column, String value) throws IOException {
-    put(tableName, row, column, value.getBytes());
+    put(tableName, row, column,value.getBytes());
+  }
+  
+  public void batchPut(String tableName, String row, String column, String value) throws IOException {
+	batchPut(tableName, row, column, value.getBytes());
   }
 
   public void putRow(String tableName, Row row) throws FileNotFoundException, IOException {
     if (!haveWorkers)
       downloadWorkers();
 
-    byte[] response = HTTP.doRequest("PUT",
-        "http://" + workers.elementAt(workerIndexForKey(row.key())).address + "/data/" + tableName, row.toByteArray())
-        .body();
+    byte[] response = HTTP.doRequest("PUT", "http://"+workers.elementAt(workerIndexForKey(row.key())).address+"/data/"+tableName, row.toByteArray()).body();
     String result = new String(response);
-    if (!result.equals("OK"))
-      throw new RuntimeException("PUT returned something other than OK: " + result);
+    if (!result.equals("OK")) 
+      throw new RuntimeException("PUT returned something other than OK: "+result);
   }
 
   public Row getRow(String tableName, String row) throws IOException {
     if (!haveWorkers)
       downloadWorkers();
 
-    HTTP.Response resp = HTTP.doRequest("GET", "http://" + workers.elementAt(workerIndexForKey(row)).address + "/data/"
-        + tableName + "/" + java.net.URLEncoder.encode(row, "UTF-8"), null);
+    HTTP.Response resp = HTTP.doRequest("GET", "http://"+workers.elementAt(workerIndexForKey(row)).address+"/data/"+tableName+"/"+java.net.URLEncoder.encode(row, "UTF-8"), null);
     if (resp.statusCode() == 404)
       return null;
 
@@ -294,34 +300,40 @@ public class KVSClient implements KVS {
     if (!haveWorkers)
       downloadWorkers();
 
-    HTTP.Response res = HTTP.doRequest("GET",
-        "http://" + workers.elementAt(workerIndexForKey(row)).address + "/data/" + tableName + "/"
-            + java.net.URLEncoder.encode(row, "UTF-8") + "/" + java.net.URLEncoder.encode(column, "UTF-8"),
-        null);
+    HTTP.Response res = HTTP.doRequest("GET", "http://"+workers.elementAt(workerIndexForKey(row)).address+"/data/"+tableName+"/"+java.net.URLEncoder.encode(row, "UTF-8")+"/"+java.net.URLEncoder.encode(column, "UTF-8"), null);
     return ((res != null) && (res.statusCode() == 200)) ? res.body() : null;
   }
+  
+//  public byte[] checkIfTableExists(String tableName, String ) throws IOException {
+//	    if (!haveWorkers)
+//	      downloadWorkers();
+//
+//	    HTTP.Response res = HTTP.doRequest("GET", "http://localhost:8001/data/"+tableName+"/"+java.net.URLEncoder.encode(row, "UTF-8")+"/"+java.net.URLEncoder.encode(column, "UTF-8"), null);
+//	    
+////	    HTTP.Response res = HTTP.doRequest("GET", "http://"+workers.elementAt(workerIndexForKey(row)).address+"/data/"+tableName+"/"+java.net.URLEncoder.encode(row, "UTF-8")+"/"+java.net.URLEncoder.encode(column, "UTF-8"), null);
+//	    return ((res != null) && (res.statusCode() == 200)) ? res.body() : null;
+//	  }
 
   public boolean existsRow(String tableName, String row) throws FileNotFoundException, IOException {
     if (!haveWorkers)
       downloadWorkers();
 
-    HTTP.Response r = HTTP.doRequest("GET", "http://" + workers.elementAt(workerIndexForKey(row)).address + "/data/"
-        + tableName + "/" + java.net.URLEncoder.encode(row, "UTF-8"), null);
+    HTTP.Response r = HTTP.doRequest("GET", "http://"+workers.elementAt(workerIndexForKey(row)).address+"/data/"+tableName+"/"+java.net.URLEncoder.encode(row, "UTF-8"), null);
     return r.statusCode() == 200;
   }
-
+  
   public int count(String tableName) throws IOException {
     if (!haveWorkers)
       downloadWorkers();
 
     int total = 0;
     for (WorkerEntry w : workers) {
-      HTTP.Response r = HTTP.doRequest("GET", "http://" + w.address + "/count/" + tableName, null);
+      HTTP.Response r = HTTP.doRequest("GET", "http://"+w.address+"/count/"+tableName, null);
       if ((r != null) && (r.statusCode() == 200)) {
         String result = new String(r.body());
         total += Integer.valueOf(result).intValue();
       }
-    }
+    } 
     return total;
   }
 
@@ -329,38 +341,38 @@ public class KVSClient implements KVS {
     if (!haveWorkers)
       downloadWorkers();
 
-    for (WorkerEntry w : workers)
-      HTTP.doRequest("PUT", "http://" + w.address + "/persist/" + tableName, null);
+    for (WorkerEntry w : workers) 
+      HTTP.doRequest("PUT", "http://"+w.address+"/persist/"+tableName, null);
   }
 
   public Iterator<Row> scan(String tableName) throws FileNotFoundException, IOException {
     return scan(tableName, null, null);
   }
 
-  public Iterator<Row> scan(String tableName, String startRow, String endRowExclusive)
-      throws FileNotFoundException, IOException {
+  public Iterator<Row> scan(String tableName, String startRow, String endRowExclusive) throws FileNotFoundException, IOException {
     if (!haveWorkers)
       downloadWorkers();
-
+    
+//    System.out.println("startRow: "+startRow+"   endRowExclusive: "+endRowExclusive);
     return new KVSIterator(tableName, startRow, endRowExclusive);
   }
 
   public static void main(String args[]) throws Exception {
-    if (args.length < 2) {
+  	if (args.length < 2) {
       System.err.println("Syntax: client <master> get <tableName> <row> <column>");
-      System.err.println("Syntax: client <master> put <tableName> <row> <column> <value>");
+  		System.err.println("Syntax: client <master> put <tableName> <row> <column> <value>");
       System.err.println("Syntax: client <master> scan <tableName>");
       System.err.println("Syntax: client <master> rename <oldTableName> <newTableName>");
       System.err.println("Syntax: client <master> persist <tableName>");
-      System.exit(1);
-    }
+  		System.exit(1);
+  	}
 
-    KVSClient client = new KVSClient(args[0]);
+  	KVSClient client = new KVSClient(args[0]);
     if (args[1].equals("put")) {
-      if (args.length != 6) {
-        System.err.println("Syntax: client <master> put <tableName> <row> <column> <value>");
-        System.exit(1);
-      }
+    	if (args.length != 6) {
+	  		System.err.println("Syntax: client <master> put <tableName> <row> <column> <value>");
+	  		System.exit(1);
+    	}
       client.put(args[2], args[3], args[4], args[5].getBytes("UTF-8"));
     } else if (args[1].equals("get")) {
       if (args.length != 5) {
@@ -394,8 +406,8 @@ public class KVSClient implements KVS {
       }
       client.persist(args[2]);
     } else {
-      System.err.println("Unknown command: " + args[1]);
-      System.exit(1);
+    	System.err.println("Unknown command: "+args[1]);
+    	System.exit(1);
     }
   }
 };

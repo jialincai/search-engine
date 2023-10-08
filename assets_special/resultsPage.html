@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <link rel="stylesheet" href="styles.css">
+    <title>ByteBuilder</title>
+</head>
+
+<body>
+    <form autocomplete="off" id="search-form">
+        <div class="logo-container"></div>
+        <input type="text" id="input-field" name="inputField" placeholder="Search..." required>
+        <button type="submit">Submit</button>
+        <ul id="autocomplete-results"></ul>
+    </form>
+    <div id="special-results"></div>
+    <div id="search-results"></div>
+
+    <script src="autocomplete.js"></script>
+    <script src="searchResults.js"></script>
+    <script src="specialResults.js"></script>
+
+</body>
+
+</html>

@@ -17,7 +17,7 @@ class Master extends cis5550.generic.Master {
   static int nextJobID = 1;
   public static KVSClient kvs;
 
-  public static void main(String args[]) {
+	public static void main(String args[]) {
 
     // Check the command-line arguments
 
@@ -25,40 +25,40 @@ class Master extends cis5550.generic.Master {
       System.err.println("Syntax: Master <port> <kvsMaster>");
       System.exit(1);
     }
-
+    
+    System.out.println("Sleeping for 10 seconds...");
+    try {
+        Thread.sleep(10000); // sleep for 10 seconds (10,000 milliseconds)
+    } catch (InterruptedException e) {
+        e.printStackTrace();
+    }
+    System.out.println("Done sleeping.");
+   
     int myPort = Integer.valueOf(args[0]);
     kvs = new KVSClient(args[1]);
 
-    logger.info("Flame master (" + version + ") starting on port " + myPort);
+    logger.info("Flame master ("+version+") starting on port "+myPort);
 
-    port(myPort);
+  	port(myPort);
     registerRoutes();
 
-    /*
-     * Set up a little info page that can be used to see the list of registered
-     * workers
-     */
+//    /* Set up a little info page that can be used to see the list of registered workers */
+//
+//    get("/", (request,response) -> {
+//      response.type("text/html");
+//      return "<html><head><title>Flame Master</title></head><body><h3>Flame Master</h3>\n" + clientTable() + "</body></html>";
+//    });
 
-    get("/", (request, response) -> {
-      response.type("text/html");
-      return "<html><head><title>Flame Master</title></head><body><h3>Flame Master</h3>\n" + clientTable()
-          + "</body></html>";
-    });
+    /* Set up the main route for job submissions. This is invoked from FlameSubmit. */
 
-    /*
-     * Set up the main route for job submissions. This is invoked from FlameSubmit.
-     */
+    post("/submit", (request,response) -> {
 
-    post("/submit", (request, response) -> {
-
-      // Extract the parameters from the query string. The 'class' parameter, which
-      // contains the main class, is mandatory, and
-      // we'll send a 400 Bad Request error if it isn't present. The 'arg1', 'arg2',
-      // ..., arguments contain command-line
+      // Extract the parameters from the query string. The 'class' parameter, which contains the main class, is mandatory, and
+      // we'll send a 400 Bad Request error if it isn't present. The 'arg1', 'arg2', ..., arguments contain command-line
       // arguments for the job and are optional.
 
       String className = request.queryParams("class");
-      logger.info("New job submitted; main class is " + className);
+      logger.info("New job submitted; main class is "+className);
 
       if (className == null) {
         response.status(400, "Bad request");
@@ -66,24 +66,23 @@ class Master extends cis5550.generic.Master {
       }
 
       Vector<String> argVector = new Vector<String>();
-      for (int i = 1; request.queryParams("arg" + i) != null; i++)
-        argVector.add(URLDecoder.decode(request.queryParams("arg" + i), "UTF-8"));
+      for (int i=1; request.queryParams("arg"+i) != null; i++) 
+        argVector.add(URLDecoder.decode(request.queryParams("arg"+i), "UTF-8"));
 
-      // We begin by uploading the JAR to each of the workers. This should be done in
-      // parallel, so we'll use a separate
+      // We begin by uploading the JAR to each of the workers. This should be done in parallel, so we'll use a separate
       // thread for each upload.
 
       Thread threads[] = new Thread[getWorkers().size()];
       String results[] = new String[getWorkers().size()];
-      for (int i = 0; i < getWorkers().size(); i++) {
-        final String url = "http://" + getWorkers().elementAt(i) + "/useJAR";
+      for (int i=0; i<getWorkers().size(); i++) {
+        final String url = "http://"+getWorkers().get(i)+"/useJAR";
         final int j = i;
-        threads[i] = new Thread("JAR upload #" + (i + 1)) {
+        threads[i] = new Thread("JAR upload #"+(i+1)) {
           public void run() {
             try {
               results[j] = new String(HTTP.doRequest("POST", url, request.bodyAsBytes()).body());
             } catch (Exception e) {
-              results[j] = "Exception: " + e;
+              results[j] = "Exception: "+e;
               e.printStackTrace();
             }
           }
@@ -93,63 +92,51 @@ class Master extends cis5550.generic.Master {
 
       // Wait for all the uploads to finish
 
-      for (int i = 0; i < threads.length; i++) {
+      for (int i=0; i<threads.length; i++) {
         try {
           threads[i].join();
         } catch (InterruptedException ie) {
         }
       }
 
-      // Write the JAR file to a local file. Remember, we will need to invoke the
-      // 'run' method of the job, but, if the job
-      // is submitted from a machine other than the master, the master won't have a
-      // local copy of the JAR file. We'll use
+      // Write the JAR file to a local file. Remember, we will need to invoke the 'run' method of the job, but, if the job
+      // is submitted from a machine other than the master, the master won't have a local copy of the JAR file. We'll use
       // a different file name each time.
 
       int id = nextJobID++;
-      String jarName = "job-" + id + ".jar";
+      String jarName = "job-"+id+".jar";
       File jarFile = new File(jarName);
       FileOutputStream fos = new FileOutputStream(jarFile);
       fos.write(request.bodyAsBytes());
       fos.close();
+      FlameContextImpl flameContext = new FlameContextImpl(jarName, kvs);
 
-      // Load the class whose name the user has specified with the 'class' parameter,
-      // find its 'run' method, and
-      // invoke it. The parameters are 1) an instance of a FlameContext, and 2) the
-      // command-line arguments that
-      // were provided in the query string above, if any. Several things can go wrong
-      // here: the class might not
-      // exist or might not have a run() method, and the method might throw an
-      // exception while it is running,
-      // in which case we'll get an InvocationTargetException. We'll extract the
-      // underlying cause and report it
+      // Load the class whose name the user has specified with the 'class' parameter, find its 'run' method, and 
+      // invoke it. The parameters are 1) an instance of a FlameContext, and 2) the command-line arguments that
+      // were provided in the query string above, if any. Several things can go wrong here: the class might not 
+      // exist or might not have a run() method, and the method might throw an exception while it is running,
+      // in which case we'll get an InvocationTargetException. We'll extract the underlying cause and report it
       // back to the user in the HTTP response, to help with debugging.
 
-      FlameContextImpl flameContext = new FlameContextImpl(jarName);
       try {
         Loader.invokeRunMethod(jarFile, className, flameContext, argVector);
       } catch (IllegalAccessException iae) {
         response.status(400, "Bad request");
-        return "Double-check that the class " + className
-            + " contains a public static run(FlameContext, String[]) method, and that the class itself is public!";
+        return "Double-check that the class "+className+" contains a public static run(FlameContext, String[]) method, and that the class itself is public!";
       } catch (NoSuchMethodException iae) {
         response.status(400, "Bad request");
-        return "Double-check that the class " + className
-            + " contains a public static run(FlameContext, String[]) method";
-      } catch (Exception e) {
-        logger.error("The job threw an exception, which was:", e.getCause());
+        return "Double-check that the class "+className+" contains a public static run(FlameContext, String[]) method";
+      } catch (InvocationTargetException ite) {
+        logger.error("The job threw an exception, which was:", ite.getCause());
         StringWriter sw = new StringWriter();
-        e.getCause().printStackTrace(new PrintWriter(sw));
+        ite.getCause().printStackTrace(new PrintWriter(sw));
         response.status(500, "Job threw an exception");
         return sw.toString();
       }
 
-      response.status(200, "OK");
-      return flameContext.finalOutput();
+      return flameContext.getOutputBody();
     });
 
-    get("/version", (request, response) -> {
-      return "v1.2 Oct 28 2022";
-    });
-  }
+    get("/version", (request, response) -> { return "v1.2 Oct 28 2022"; });
+	}
 }

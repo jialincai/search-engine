@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <link id="styles" rel="stylesheet" type="text/css" href="homePageStyle.css">
+    <title>ByteBuilder</title>
+</head>
+
+<body>
+    <img class="logo" src="logoFront.svg">
+    <form autocomplete="off" id="search-form" action="resultsPage.html" method="post">
+        <!-- <h1>ByteBuilder</h1> -->
+        <input type="text" id="input-field" name="inputField" placeholder="Search..." required>
+        <button type="submit">Submit</button>
+        <ul id="autocomplete-results"></ul>
+    </form>
+
+    <script type="text/javascript" src="autocomplete.js"></script>
+
+    <script>
+        document.getElementById("search-form").addEventListener("submit", function (event) {
+            // Prevent the form from submitting normally
+            event.preventDefault();
+
+            // Get the form data
+            var input1 = document.getElementById("input-field");
+
+            // Get the URL to redirect to
+            var redirectUrl = event.target.action + "?userInput=" + input1.value;
+
+            // Redirect to the new page
+            window.location.href = redirectUrl;
+        });
+    </script>
+</body>
+
+</html>

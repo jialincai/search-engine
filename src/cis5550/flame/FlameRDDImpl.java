@@ -1,124 +1,144 @@
 package cis5550.flame;
 
-import java.nio.charset.StandardCharsets;
+import java.io.IOException;
+import java.io.Serializable;
 import java.util.*;
 
-import cis5550.flame.FlamePairRDD.TwoStringsToString;
 import cis5550.kvs.*;
 import cis5550.tools.Serializer;
+import cis5550.flame.FlameContext.*;
+import cis5550.flame.FlamePairRDD.TwoStringsToString;
 
 public class FlameRDDImpl implements FlameRDD {
-    String tableName_;
-    FlameContextImpl context_;
+	
+	private String tableName;
+	
+	KVSClient kvs;
+	
+	FlameRDDImpl(String tableName, KVSClient kvs){
+		this.tableName = tableName;
+		this.kvs = kvs;
+	}
 
-    public FlameRDDImpl(String tableName, FlameContextImpl context) {
-        tableName_ = tableName;
-        context_ = context;
-    }
+	public List<String> collect() throws Exception {
+		
+		List <String> RDDElements = new ArrayList<String>();
+		Iterator<Row> tableRows = kvs.scan(tableName);
+		
+		while(tableRows.hasNext()) {
+			Row row = tableRows.next();
+			RDDElements.add(row.get("value"));
+		}
+		
+		return RDDElements;
+	}
 
-    @Override
-    public List<String> collect() throws Exception {
-        List<String> allValues = new LinkedList<>();
-        Iterator<Row> iter = Master.kvs.scan(tableName_);
+	public FlameRDD flatMap(StringToIterable lambda) throws Exception {
+		
+		FlameContextImpl flameContext = new FlameContextImpl("dummyJarName.jar", kvs);
+		String outputTable = flameContext.invokeOperation("/rdd/flatMap", tableName, Serializer.objectToByteArray(lambda), lambda, null);
+		FlameRDD flameRDD = new FlameRDDImpl(outputTable, kvs);
+		return flameRDD;	
+	}
 
-        while (iter.hasNext()) {
-            Row r = iter.next();
-            allValues.add(r.get("value"));
-        }
+	public FlamePairRDD mapToPair(StringToPair lambda) throws Exception {
+		
+		FlameContextImpl flameContext = new FlameContextImpl("dummyJarName.jar", kvs);
+		String outputTable = flameContext.invokeOperation("/rdd/mapToPair", tableName, Serializer.objectToByteArray(lambda), lambda, null);
+		FlamePairRDD flamePairRDD = new FlamePairRDDImpl(outputTable, kvs);
+		return flamePairRDD;
+	}
 
-        return allValues;
-    }
+	public FlameRDD intersection(FlameRDD r) throws Exception {
+		
+		return null;
 
-    @Override
-    public FlameRDD flatMap(StringToIterable lambda) throws Exception {
-        String resTable = context_.invokeOperation("/rdd/flatMap", Serializer.objectToByteArray(lambda),
-                new String(tableName_), null);
-        return new FlameRDDImpl(resTable, context_);
-    }
+	}
 
-    @Override
-    public FlamePairRDD mapToPair(StringToPair lambda) throws Exception {
-        String resTable = context_.invokeOperation("/rdd/mapToPair", Serializer.objectToByteArray(lambda),
-                new String(tableName_), null);
-        return new FlamePairRDDImpl(resTable, context_);
-    }
+	public FlameRDD sample(double f) throws Exception {
+		
+		FlameContextImpl flameContext = new FlameContextImpl("dummyJarName.jar", kvs);
+		String outputTable = flameContext.invokeOperation("/rdd/sample", tableName, null, null, Double.toString(f));
+		FlameRDD flameRDD = new FlameRDDImpl(outputTable, kvs);
+		return flameRDD;
+	}
 
-    @Override
-    public int count() throws Exception {
-        return Master.kvs.count(tableName_);
-    }
+	public FlamePairRDD groupBy(StringToString lambda) throws Exception {
+		// TODO Auto-generated method stub
+		return null;
+	}
 
-    @Override
-    public void saveAsTable(String tableNameArg) throws Exception {
-        Master.kvs.rename(tableName_, tableNameArg);
-        tableName_ = tableNameArg;
-    }
+	public int count() throws Exception {
+//		System.out.println("Returning count of table : " + kvs.count(tableName));
+		return kvs.count(tableName); 
+	}
 
-    @Override
-    public FlameRDD distinct() throws Exception {
-        String resTable = context_.invokeOperation("/rdd/distinct", null,
-                new String(tableName_), null);
-        return new FlameRDDImpl(resTable, context_);
-    }
+	public void saveAsTable(String tableNameArg) throws Exception {
+		kvs.rename(tableName, tableNameArg);
+		tableName = tableNameArg;	
+	}
 
-    @Override
-    public Vector<String> take(int num) throws Exception {
-        Iterator<Row> rowIter = Master.kvs.scan(tableName_, null, null);
+	public FlameRDD distinct() throws Exception {
+		
+		String outputTable = Long.toString(System.currentTimeMillis()) + (new Random());
+		FlameRDD flameRDD = new FlameRDDImpl(outputTable, kvs);
+		
+		Iterator<Row> eligibleRows =  (Iterator<Row>)kvs.scan(tableName);
+		
+		while(eligibleRows.hasNext()) {
+			
+			Row row = eligibleRows.next();	
+			kvs.put(outputTable, row.get("value"), "value", row.get("value"));			
+		}
+		
+		return flameRDD;
+	}
 
-        Vector<String> toReturn = new Vector<>();
-        while (rowIter.hasNext() && num-- != 0) {
-            toReturn.add(rowIter.next().get("value"));
-        }
+	public Vector<String> take(int num) throws Exception {
+		
+		Vector<String> result = new Vector<String> ();
+		
+		Iterator<Row> eligibleRows =  (Iterator<Row>)kvs.scan(tableName);
+		
+		while(eligibleRows.hasNext() && result.size() < num) {
+			
+			Row row = eligibleRows.next();	
+			result.add(row.get("value"));			
+		}
+		
+		return result;
+	}
 
-        return toReturn;
-    }
 
-    @Override
-    public String fold(String zeroElement, TwoStringsToString lambda) throws Exception {
-        String resTable = context_.invokeOperation("/rdd/fold",
-                Serializer.objectToByteArray(lambda), new String(tableName_), zeroElement);
-        String finalAggregationTable = context_.invokeOperation("/pairRdd/foldByKey",
-                Serializer.objectToByteArray(lambda), resTable, zeroElement);
-        Iterator<Row> res = Master.kvs.scan(finalAggregationTable);
-        return res.next().get("value");
-    }
+	public String fold(String zeroElement, TwoStringsToString lambda) throws Exception {
+		
+		FlameContextImpl flameContext = new FlameContextImpl("dummyJarName.jar", kvs);
+		String output = flameContext.invokeOperation("/rdd/fold", tableName, Serializer.objectToByteArray(lambda), lambda, zeroElement);
+		return output;
+	}
 
-    @Override
-    public FlamePairRDD flatMapToPair(StringToPairIterable lambda) throws Exception {
-        String resTable = context_.invokeOperation("/rdd/flatMapToPair", Serializer.objectToByteArray(lambda),
-                new String(tableName_), null);
-        return new FlamePairRDDImpl(resTable, context_);
-    }
+	public FlamePairRDD flatMapToPair(StringToPairIterable lambda) throws Exception {
 
-    // ----------------------- EXTRA CREDIT ITEMS ---------------------------
+		FlameContextImpl flameContext = new FlameContextImpl("dummyJarName.jar", kvs);
+		String outputTable = flameContext.invokeOperation("/rdd/flatMapToPair", tableName, Serializer.objectToByteArray(lambda), lambda, null);
+		FlamePairRDD flamePairRDD = new FlamePairRDDImpl(outputTable, kvs);
+		return flamePairRDD;
+	}
 
-    @Override
-    public FlameRDD intersection(FlameRDD r) throws Exception {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'intersection'");
-    }
+	public FlameRDD filter(StringToBoolean lambda) throws Exception {
+		
+		FlameContextImpl flameContext = new FlameContextImpl("dummyJarName.jar", kvs);
+		String outputTable = flameContext.invokeOperation("/rdd/filter", tableName, Serializer.objectToByteArray(lambda), lambda, null);
+		FlameRDD flameRDD = new FlameRDDImpl(outputTable, kvs);
+		return flameRDD;
+	}
 
-    @Override
-    public FlameRDD sample(double f) throws Exception {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'sample'");
-    }
-
-    @Override
-    public FlamePairRDD groupBy(StringToString lambda) throws Exception {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'groupBy'");
-    }
-
-    @Override
-    public FlameRDD filter(StringToBoolean lambda) throws Exception {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'filter'");
-    }
-
-    @Override
-    public FlameRDD mapPartitions(IteratorToIterator lambda) throws Exception {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'mapPartitions'");
-    }
+	public FlameRDD mapPartitions(IteratorToIterator lambda) throws Exception {
+		
+		FlameContextImpl flameContext = new FlameContextImpl("dummyJarName.jar", kvs);
+		String outputTable = flameContext.invokeOperation("/rdd/mapPartitions", tableName, Serializer.objectToByteArray(lambda), lambda, null);
+		FlameRDD flameRDD = new FlameRDDImpl(outputTable, kvs);
+		return flameRDD;
+	}
+	
 }

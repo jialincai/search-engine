@@ -3,13 +3,24 @@ package cis5550.flame;
 import java.net.*;
 import java.io.*;
 
+import cis5550.webserver.*;
+
 public class FlameSubmit {
 
   static int responseCode;
   static String errorResponse;
 
   public static String submit(String server, String jarFileName, String className, String arg[]) throws Exception {
-    responseCode = 200;
+    
+	  System.out.println("Sleeping for 14 seconds...");
+	    try {
+	        Thread.sleep(14000); // sleep for 10 seconds (10,000 milliseconds)
+	    } catch (InterruptedException e) {
+	        e.printStackTrace();
+	    }
+	    System.out.println("Done sleeping.");
+	    
+	 responseCode = 200;
     errorResponse = null;
     String u = "http://"+server+"/submit"+"?class="+className;
     for (int i=0; i<arg.length; i++) 
